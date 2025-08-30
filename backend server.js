@@ -45,7 +45,7 @@ let db;
 (async () => {
   db = await open({
     filename: path.join(__dirname, "..", "data.db"),
-    driver: sqlite3.Database
+    driver: better-sqlite3.Database
   });
   await db.exec(`
     PRAGMA journal_mode = WAL;
@@ -244,4 +244,5 @@ app.get("/admin", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
 
