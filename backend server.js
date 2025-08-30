@@ -1,33 +1,59 @@
+// 📦 الاستيراد
 import express from "express";
-import cors from "cors";
-import Database from 'better-sqlite3';
-import "dotenv/config";
-import crypto from "crypto";
 import session from "express-session";
+import "dotenv/config";
 import bcrypt from "bcrypt";
-import path from "path";
-import { fileURLToPath } from "url";
+import crypto from "crypto";
+import pkg from "pg";
+const { Pool } = pkg;
 
-const db = new Database('./data.db');
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+// 🚀 إعداد الخادم
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
-const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
+// 🛠️ إعداد الاتصال بقاعدة PostgreSQL
+const pool = new Pool({
+  host: process.env.PGHOST,
+  port: process.env.PGPORT,
+  user: process.env.PGUSER,
+  password: process.env.PGPASSWORD,
+  database: process.env.PGDATABASE,
+  ssl: { rejectUnauthorized: false }
+});
 
-// --- Middleware
-app.use(cors({
-  origin: true,
-  credentials: true
-}));
-app.use(express.json());
+// 🧱 إنشاء جدول البلاغات
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS reports (
+        id SERIAL PRIMARY KEY,
+        ref TEXT UNIQUE NOT NULL,
+        imei TEXT NOT NULL,
+        status TEXT CHECK(status IN ('lost','stolen','recovered')) NOT NULL,
+        brand TEXT,
+        model TEXT,
+        color TEXT,
+        description TEXT,
+        lost_date TEXT,
+        location TEXT,
+        contact_name TEXT,
+        contact_email TEXT,
+        contact_phone TEXT,
+        police_report TEXT,
+        is_public BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log("✅ PostgreSQL table ready");
+  } catch (err) {
+    console.error("❌ Failed to initialize DB:", err);
+  }
+})();
+
+// 🍪 إعداد الجلسات
 app.use(session({
   name: "sid",
-  secret: SESSION_SECRET,
+  secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"),
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -38,42 +64,12 @@ app.use(session({
   }
 }));
 
-// Static public assets (site UI)
-app.use(express.static(path.join(__dirname, "..", "public")));
+// ⚙️ إعدادات عامة
+app.use(express.json());
+app.use(express.static("public"));
+app.use(express.urlencoded({ extended: true }));
 
-let db;
-(async () => {
-  db = await open({
-    filename: path.join(__dirname, "..", "data.db"),
-    driver: better-sqlite3.Database
-  });
-  await db.exec(`
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS reports (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ref TEXT UNIQUE NOT NULL,
-      imei TEXT NOT NULL,
-      status TEXT NOT NULL CHECK(status IN ('lost','stolen','recovered')),
-      brand TEXT,
-      model TEXT,
-      color TEXT,
-      description TEXT,
-      lost_date TEXT,
-      location TEXT,
-      contact_name TEXT,
-      contact_email TEXT,
-      contact_phone TEXT,
-      police_report TEXT,
-      is_public INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_reports_imei ON reports (imei);
-    CREATE INDEX IF NOT EXISTS idx_reports_public ON reports (is_public);
-  `);
-})();
-
-// --- Helpers
-
+// 🔍 التحقق من رقم IMEI
 const isValidIMEI = (s) => {
   if (!/^\d{15}$/.test(s)) return false;
   let sum = 0;
@@ -85,85 +81,16 @@ const isValidIMEI = (s) => {
   return sum % 10 === 0;
 };
 
+// 🔐 حماية واجهات الإدارة
 const requireAdmin = (req, res, next) => {
   if (req.session && req.session.isAdmin === true) return next();
   return res.status(401).json({ error: "Unauthorized" });
 };
 
-// بسيط: تحديد محاولات الدخول لكل IP
-const loginAttempts = new Map(); // ip -> { count, ts }
-const maxAttempts = 7;
-const windowMs = 15 * 60 * 1000;
-
-const gateLogin = (req, res, next) => {
-  const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() || req.socket.remoteAddress || "ip";
-  const now = Date.now();
-  const rec = loginAttempts.get(ip) || { count: 0, ts: now };
-  if (now - rec.ts > windowMs) { rec.count = 0; rec.ts = now; }
-  if (rec.count >= maxAttempts) return res.status(429).json({ error: "Too many attempts. Try later." });
-  loginAttempts.set(ip, rec);
-  req._rate = { rec, ip };
-  next();
-};
-
-// --- Auth routes
-
-app.post("/api/auth/login", gateLogin, async (req, res) => {
-  try {
-    const { password } = req.body || {};
-    if (!password) return res.status(400).json({ error: "Password required" });
-
-    let ok = false;
-    if (ADMIN_PASSWORD_HASH) {
-      ok = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
-    } else if (ADMIN_PASSWORD) {
-      // للمشاريع الصغيرة/التجربة فقط
-      ok = crypto.timingSafeEqual(Buffer.from(password), Buffer.from(ADMIN_PASSWORD));
-    } else {
-      return res.status(500).json({ error: "Admin password not configured" });
-    }
-
-    if (!ok) {
-      req._rate.rec.count++;
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
-
-    // نجاح
-    req.session.isAdmin = true;
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  req.session?.destroy(() => {});
-  res.json({ ok: true });
-});
-
-app.get("/api/auth/me", (req, res) => {
-  res.json({ isAdmin: !!(req.session && req.session.isAdmin) });
-});
-
-// --- Public API
-
+// ✅ واجهة صحية
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-app.get("/api/check", async (req, res) => {
-  try {
-    const imei = (req.query.imei || "").trim();
-    if (!isValidIMEI(imei)) return res.status(400).json({ error: "Invalid IMEI" });
-    const rows = await db.all(
-      `SELECT ref, imei, status, brand, model, color, lost_date, location, created_at
-       FROM reports WHERE imei = ? AND is_public = 1 ORDER BY created_at DESC`,
-      imei
-    );
-    res.json({ imei, count: rows.length, reports: rows });
-  } catch {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
+// 📝 تقديم بلاغ جديد
 app.post("/api/report", async (req, res) => {
   try {
     const {
@@ -174,75 +101,106 @@ app.post("/api/report", async (req, res) => {
 
     if (!isValidIMEI(imei)) return res.status(400).json({ error: "Invalid IMEI" });
     if (!["lost", "stolen"].includes(status)) {
-      return res.status(400).json({ error: "Invalid status (lost|stolen)" });
+      return res.status(400).json({ error: "Invalid status" });
     }
 
     const ref = crypto.randomUUID();
-    await db.run(
-      `INSERT INTO reports
-        (ref, imei, status, brand, model, color, description, lost_date, location,
-         contact_name, contact_email, contact_phone, police_report, is_public)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [
-        ref, imei, status, brand || null, model || null, color || null,
-        description || null, lost_date || null, location || null,
-        contact_name || null, contact_email || null, contact_phone || null,
-        police_report || null, is_public ? 1 : 0
-      ]
-    );
+    await pool.query(`
+      INSERT INTO reports (
+        ref, imei, status, brand, model, color, description, lost_date, location,
+        contact_name, contact_email, contact_phone, police_report, is_public
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+    `, [
+      ref, imei, status, brand, model, color, description, lost_date, location,
+      contact_name, contact_email, contact_phone, police_report, is_public ? true : false
+    ]);
 
     res.status(201).json({ ok: true, ref });
-  } catch {
+  } catch (err) {
+    console.error("❌ /api/report error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// --- Admin API (session-protected)
+// 🔎 فحص حالة IMEI
+app.get("/api/check", async (req, res) => {
+  try {
+    const imei = (req.query.imei || "").trim();
+    if (!isValidIMEI(imei)) return res.status(400).json({ error: "Invalid IMEI" });
 
+    const { rows } = await pool.query(`
+      SELECT ref, imei, status, brand, model, color, lost_date, location, created_at
+      FROM reports WHERE imei = $1 AND is_public = true ORDER BY created_at DESC
+    `, [imei]);
+
+    res.json({ imei, count: rows.length, reports: rows });
+  } catch (err) {
+    console.error("❌ /api/check error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 🔐 تسجيل الدخول
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { password } = req.body || {};
+    if (!password) return res.status(400).json({ error: "Password required" });
+
+    const stored = process.env.ADMIN_PASSWORD;
+    const ok = crypto.timingSafeEqual(Buffer.from(password), Buffer.from(stored));
+    if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+
+    req.session.isAdmin = true;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 🔓 تسجيل الخروج
+app.post("/api/auth/logout", (req, res) => {
+  req.session?.destroy(() => {});
+  res.json({ ok: true });
+});
+
+// 🧾 التحقق من الجلسة
+app.get("/api/auth/me", (req, res) => {
+  res.json({ isAdmin: !!(req.session && req.session.isAdmin) });
+});
+
+// 📋 عرض البلاغات (لوحة الإدارة)
 app.get("/api/reports", requireAdmin, async (req, res) => {
   try {
-    const rows = await db.all(
-      `SELECT * FROM reports ORDER BY created_at DESC LIMIT 500`
-    );
+    const { rows } = await pool.query(`
+      SELECT * FROM reports ORDER BY created_at DESC LIMIT 500
+    `);
     res.json(rows);
-  } catch {
+  } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// ✏️ تحديث بلاغ معين
 app.patch("/api/reports/:ref", requireAdmin, async (req, res) => {
   try {
     const { ref } = req.params;
-    const fields = [];
-    const values = [];
-    const updatable = {
-      status: (v) => ["lost", "stolen", "recovered"].includes(v),
-      is_public: (v) => v === 0 || v === 1
-    };
-    for (const [k, v] of Object.entries(req.body || {})) {
-      if (k in updatable && updatable[k](v)) {
-        fields.push(`${k} = ?`);
-        values.push(v);
-      }
+    const { status, is_public } = req.body || {};
+
+    if (!["lost", "stolen", "recovered"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status" });
     }
-    if (!fields.length) return res.status(400).json({ error: "No valid fields" });
-    values.push(ref);
-    const r = await db.run(`UPDATE reports SET ${fields.join(", ")} WHERE ref = ?`, values);
-    if (r.changes === 0) return res.status(404).json({ error: "Not found" });
+
+    await pool.query(`
+      UPDATE reports SET status = $1, is_public = $2 WHERE ref = $3
+    `, [status, is_public ? true : false, ref]);
+
     res.json({ ok: true });
-  } catch {
+  } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// --- Admin page (HTML) protected by session
-app.get("/admin", (req, res) => {
-  // إن لم يكن مسجلاً، اعرض نموذج الدخول؛ وإلا أعرض اللوحة
-  res.sendFile(path.join(__dirname, "..", "admin", "admin.html"));
-});
-
+// 🟢 تشغيل الخادم
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
-
-
