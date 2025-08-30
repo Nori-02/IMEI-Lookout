@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
-import sqlite3 from "sqlite3";
-import { open } from "sqlite";
+import Database from 'better-sqlite3';
 import "dotenv/config";
 import crypto from "crypto";
 import session from "express-session";
@@ -9,6 +8,7 @@ import bcrypt from "bcrypt";
 import path from "path";
 import { fileURLToPath } from "url";
 
+const db = new Database('./data.db');
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -244,3 +244,4 @@ app.get("/admin", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
