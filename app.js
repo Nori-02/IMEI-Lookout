@@ -59,6 +59,13 @@ const i18n = {
   }
 };
 
+document.getElementById("toggleDark").addEventListener("click", () => {
+  document.documentElement.classList.toggle("dark");
+});
+
+reportMsg.textContent = i18n[state.lang].success_ref(json.ref);
+setTimeout(() => window.location.href = "/thankyou.html", 2000);
+
 const state = {
   lang: localStorage.getItem("lang") || "ar",
   apiBase: "" // same origin
