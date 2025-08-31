@@ -8,7 +8,6 @@ import bcrypt from "bcrypt";
 import path from "path";
 import { fileURLToPath } from "url";
 
-const db = new Database('./data.db');
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -41,36 +40,33 @@ app.use(session({
 // Static public assets (site UI)
 app.use(express.static(path.join(__dirname, "..", "public")));
 
-let db;
-(async () => {
-  db = await open({
-    filename: path.join(__dirname, "..", "data.db"),
-    driver: better-sqlite3.Database
-  });
-  await db.exec(`
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS reports (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ref TEXT UNIQUE NOT NULL,
-      imei TEXT NOT NULL,
-      status TEXT NOT NULL CHECK(status IN ('lost','stolen','recovered')),
-      brand TEXT,
-      model TEXT,
-      color TEXT,
-      description TEXT,
-      lost_date TEXT,
-      location TEXT,
-      contact_name TEXT,
-      contact_email TEXT,
-      contact_phone TEXT,
-      police_report TEXT,
-      is_public INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_reports_imei ON reports (imei);
-    CREATE INDEX IF NOT EXISTS idx_reports_public ON reports (is_public);
-  `);
-})();
+const db = new Database(path.join(__dirname, "..", "data.db"));
+
+// Set WAL mode separately to avoid issues with multiple statements
+db.pragma('journal_mode = WAL');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ref TEXT UNIQUE NOT NULL,
+    imei TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('lost','stolen','recovered')),
+    brand TEXT,
+    model TEXT,
+    color TEXT,
+    description TEXT,
+    lost_date TEXT,
+    location TEXT,
+    contact_name TEXT,
+    contact_email TEXT,
+    contact_phone TEXT,
+    police_report TEXT,
+    is_public INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_reports_imei ON reports (imei);
+  CREATE INDEX IF NOT EXISTS idx_reports_public ON reports (is_public);
+`);
 
 // --- Helpers
 
