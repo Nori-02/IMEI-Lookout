@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: imei-report
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: imei-report-db
+          property: connectionString
+
+databases:
+  - name: imei-report-db
+    plan: free
+    ipAllowList: []
+    postgresMajorVersion: 15
